@@ -2,8 +2,6 @@
 # shellcheck disable=SC2034
 set -eu
 
-export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-
 # Track whether we already emitted HTTP headers.
 HTTP_SENT=0
 

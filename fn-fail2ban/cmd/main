@@ -21,7 +21,6 @@ start_process() {
 
 stop_process() {
   log_msg "Stopping process ..."
-
   systemctl stop fail2ban.service >>${LOG_FILE} 2>&1
 }
 
