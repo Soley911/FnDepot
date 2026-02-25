@@ -68,7 +68,7 @@ log_msg "Config callback completed"
 
 # 重新生成 Alloy 配置并重载
 # TRIM_APPDEST 指向 target 目录，cmd/ 在应用根目录 /var/apps/[appname]/cmd/
-APP_ROOT="/var/apps/grafana.alloy"
+APP_ROOT="/var/apps/fn-grafana-alloy"
 if [ -x "${APP_ROOT}/cmd/main" ]; then
     "${APP_ROOT}/cmd/main" reload >> ${LOG_FILE} 2>&1
     log_msg "Configuration reloaded"
