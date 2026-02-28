@@ -9,9 +9,9 @@ sudo chmod +x fnpack
 for APP in fn-*; do
   [ -f "${APP}/norelease" ] && continue
   [ -f "${APP}/manifest" ] || continue
-  APPNAME=$(grep '^appname' "${APP}/manifest" | awk -F= '{print $2}' | xargs)
-  VERSION=$(grep '^version' "${APP}/manifest" | awk -F= '{print $2}' | xargs)
-  PLATFORM=$(grep '^platform' "${APP}/manifest" | awk -F= '{print $2}' | xargs)
+  APPNAME=$(grep -w '^appname' "${APP}/manifest" | awk -F= '{print $2}' | xargs)
+  VERSION=$(grep -w '^version' "${APP}/manifest" | awk -F= '{print $2}' | xargs)
+  PLATFORM=$(grep -w '^platform' "${APP}/manifest" | awk -F= '{print $2}' | xargs)
   echo "Building ${APP} ..."
   if [ -f "${APP}/build.sh" ]; then
     chmod +x "$(realpath "${APP}")/build.sh"
