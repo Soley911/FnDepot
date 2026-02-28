@@ -13,14 +13,11 @@
     <div class="card">
       <h2>显示器控制</h2>
       <div class="body">
-        <div>
-          <div>状态: <strong id="screenStatus">未知</strong></div>
-          <div>最后更新: <span id="screenTS">-</span></div>
-          <div class="button-row">
-            <button id="screenOffCard" type="button">关闭显示器</button>
-            <button id="screenOnCard" type="button">开启显示器</button>
-            <button id="screenRefresh" type="button">刷新状态</button>
-          </div>
+        <div class="monitor-toolbar">
+          <button id="screenRefresh" type="button">刷新显示器</button>
+        </div>
+        <div id="monitorList" class="monitor-list" aria-live="polite">
+          <div class="monitor-empty">正在读取显示器状态...</div>
         </div>
       </div>
     </div>
@@ -182,30 +179,100 @@
         read();
       } catch (e) { showMsg('网络错误: ' + (e.message || e)); }
     }
-    async function screenAction(state) {
+    function monitorMetaText(c) {
+      const parts = [
+        '连接=' + (c.status || 'unknown'),
+        'enabled=' + (c.enabled || 'unknown')
+      ];
+      if (c.dpms !== null && c.dpms !== undefined) parts.push('dpms=' + c.dpms);
+      if (c.connector_id !== null && c.connector_id !== undefined) parts.push('id=' + c.connector_id);
+      if (c.controllable === false && c.control_reason) parts.push('原因=' + c.control_reason);
+      if (c.method) parts.push('method=' + c.method);
+      return parts.join(' · ');
+    }
+    function escapeHtml(v) {
+      return String(v || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    function renderMonitorList(connectors) {
+      const host = document.getElementById('monitorList');
+      if (!host) return;
+      const list = Array.isArray(connectors) ? connectors : [];
+      if (!list.length) {
+        host.innerHTML = '<div class="monitor-empty">未检测到显示器连接器</div>';
+        return;
+      }
+      const html = list.map(c => {
+        const connector = c.sys_name || c.name || '';
+        const title = c.name || c.sys_name || 'unknown';
+        const state = c.state || 'unknown';
+        const controllable = !!c.controllable;
+        const reason = c.control_reason || '该显示器当前不可控';
+        const stateClass = state === 'on' ? 'state-on' : (state === 'off' ? 'state-off' : 'state-unknown');
+        const disableAttr = controllable ? '' : 'disabled aria-disabled="true"';
+        const disableTitle = controllable ? '' : ` title="${escapeHtml(reason)}"`;
+        return `
+          <div class="monitor-item">
+            <div class="monitor-main">
+              <span class="state-pill ${stateClass}">${state}</span>
+              <div class="monitor-title">${escapeHtml(title)}</div>
+              <div class="monitor-meta">${escapeHtml(monitorMetaText(c))}</div>
+            </div>
+            <div class="monitor-side">
+              <div class="monitor-actions">
+                <button type="button" data-action="on" data-connector="${escapeHtml(connector)}" ${disableAttr}${disableTitle}>开启</button>
+                <button type="button" data-action="off" data-connector="${escapeHtml(connector)}" ${disableAttr}${disableTitle}>关闭</button>
+                <button type="button" data-action="refresh" data-connector="${escapeHtml(connector)}">刷新</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+      host.innerHTML = html;
+    }
+    async function screenAction(state, connector) {
       showMsg('正在设置屏幕...', 2000);
       try {
-        const r = await fetch('../www/api.cgi?action=screen&state=' + encodeURIComponent(state), { cache: 'no-store' });
+        const r = await fetch('../www/api.cgi?action=screen&state=' + encodeURIComponent(state) + '&connector=' + encodeURIComponent(connector), { cache: 'no-store' });
         const text = await r.text(); let j = null; try { j = JSON.parse(text); } catch (e) { j = null }
         if (!r.ok || !j) { showMsg('操作失败'); return; }
         if (!j.ok) { showMsg('错误: ' + (j.error || j.message || 'unknown')); return; }
-        showMsg('已执行: ' + state, 1500);
+        showMsg('已执行: ' + state + ' (' + connector + ')', 1500);
+        renderMonitorList(j.connectors || []);
         await loadScreenStatus();
       } catch (e) { showMsg('网络错误: ' + (e.message || e)); }
     }
-    async function loadScreenStatus() {
+    async function loadScreenStatus(connector) {
       try {
-        const r = await fetch('../www/api.cgi?action=screen_status', { cache: 'no-store' });
+        const r = await fetch('../www/api.cgi?action=screen_status&connector=' + encodeURIComponent(connector), { cache: 'no-store' });
         const text = await r.text(); let j = null; try { j = JSON.parse(text); } catch (e) { j = null }
-        if (!r.ok || !j) { document.getElementById('screenStatus').textContent = '未知'; document.getElementById('screenTS').textContent = '-'; return; }
+        if (!r.ok || !j) {
+          const host = document.getElementById('monitorList');
+          if (host) host.innerHTML = '<div class="monitor-empty">状态读取失败</div>';
+          return;
+        }
         if (!j.ok) { showMsg('状态读取错误'); return; }
-        document.getElementById('screenStatus').textContent = j.state || '未知';
-        document.getElementById('screenTS').textContent = j.ts ? (new Date(j.ts * 1000)).toLocaleString() : '-';
+        renderMonitorList(j.connectors || []);
       } catch (e) { showMsg('网络错误: ' + (e.message || e)); }
     }
-    document.getElementById('screenOffCard').addEventListener('click', () => screenAction('off'));
-    document.getElementById('screenOnCard').addEventListener('click', () => screenAction('on'));
     document.getElementById('screenRefresh').addEventListener('click', () => loadScreenStatus());
+    document.getElementById('monitorList').addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('button[data-action][data-connector]') : null;
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      const connector = btn.getAttribute('data-connector') || '';
+      if (action === 'refresh') {
+        loadScreenStatus(connector);
+        return;
+      }
+      if (action === 'on' || action === 'off') {
+        screenAction(action, connector);
+      }
+    });
     document.getElementById('save').addEventListener('click', save);
     document.getElementById('refresh').addEventListener('click', (e) => { e.preventDefault(); read(); });
     read();

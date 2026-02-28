@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-import os, sys, json, time, subprocess
+import os, sys, json, subprocess, glob, re
 
 LOGIND_PATH = "/etc/systemd/logind.conf"
 BASE_DIR = os.path.dirname(__file__)
-SCREEN_STATE_PATH = os.path.join(BASE_DIR, "screen_state.json")
+DRM_CLASS_PATH = "/sys/class/drm"
 
 
 def respond(obj, status=200):
@@ -149,6 +149,268 @@ def read_post_json():
         return {}
 
 
+def run_cmd(cmd, timeout=8):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def list_drm_connectors():
+    connectors = []
+    for path in sorted(glob.glob(os.path.join(DRM_CLASS_PATH, "card*-*"))):
+        base = os.path.basename(path)
+        if "-renderD" in base or "-controlD" in base:
+            continue
+        status_path = os.path.join(path, "status")
+        if not os.path.exists(status_path):
+            continue
+        # e.g. card0-HDMI-A-1 => card=card0, name=HDMI-A-1
+        parts = base.split("-", 1)
+        if len(parts) != 2:
+            continue
+        connectors.append(
+            {
+                "sys_name": base,
+                "card": parts[0],
+                "name": parts[1],
+                "path": path,
+            }
+        )
+    return connectors
+
+
+def detect_card_module(card_name):
+    mod_link = os.path.join(DRM_CLASS_PATH, card_name, "device", "driver", "module")
+    try:
+        if os.path.islink(mod_link):
+            target = os.readlink(mod_link)
+            return os.path.basename(target)
+    except Exception:
+        pass
+    return None
+
+
+def parse_modetest_connectors(module_name=None):
+    # Return mapping: connector_id(int) -> {id, name, dpms_value}
+    # Use auto-scan mode by default (without -M) to avoid driver/module mapping issues.
+    cmd = (
+        ["modetest", "-c"] if not module_name else ["modetest", "-M", module_name, "-c"]
+    )
+    rc, out, err = run_cmd(cmd, timeout=12)
+    if rc != 0:
+        return {"_error": f"modetest failed: {err.strip() or out.strip()}"}
+
+    by_id = {}
+    lines = out.splitlines()
+    cur_id = None
+    in_props = False
+    seen_dpms = False
+    cur_item = None
+
+    # connector row examples may vary; parse by token positions conservatively
+    row_re = re.compile(r"^\s*(\d+)\s+\d+\s+\w+\s+([A-Za-z0-9._:-]+)\b")
+    for line in lines:
+        m = row_re.match(line)
+        if m:
+            cur_id = int(m.group(1))
+            cur_item = {"id": cur_id, "name": m.group(2), "dpms_value": None}
+            by_id[cur_id] = cur_item
+            in_props = False
+            seen_dpms = False
+            continue
+
+        s = line.strip()
+        if not cur_item:
+            continue
+        if s == "props:" or s.startswith("props:"):
+            in_props = True
+            continue
+        if not in_props:
+            continue
+
+        if re.match(r"^\d+\s+DPMS:\s*$", s):
+            seen_dpms = True
+            continue
+        if seen_dpms:
+            vm = re.match(r"^value:\s*(\d+)\s*$", s)
+            if vm:
+                cur_item["dpms_value"] = int(vm.group(1))
+                seen_dpms = False
+
+    return by_id
+
+
+def read_text_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def write_text_file(path, value):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(value)
+        return True, "ok"
+    except Exception as e:
+        return False, str(e)
+
+
+def build_drm_status():
+    connectors = list_drm_connectors()
+    parsed = parse_modetest_connectors(None)
+
+    result = []
+    for c in connectors:
+        status = read_text_file(os.path.join(c["path"], "status")) or "unknown"
+        enabled_path = os.path.join(c["path"], "enabled")
+        enabled = read_text_file(enabled_path)
+        connector_id_txt = read_text_file(os.path.join(c["path"], "connector_id"))
+        if enabled is None:
+            enabled = "unknown"
+        connector_id = None
+        if connector_id_txt and connector_id_txt.isdigit():
+            connector_id = int(connector_id_txt)
+
+        item = {
+            "sys_name": c["sys_name"],
+            "card": c["card"],
+            "name": c["name"],
+            "path": c["path"],
+            "status": status,
+            "enabled": enabled,
+            "enabled_writable": os.path.exists(enabled_path)
+            and os.access(enabled_path, os.W_OK),
+            "module": None,
+            "connector_id": connector_id,
+            "dpms": None,
+        }
+
+        if isinstance(parsed, dict) and "_error" in parsed:
+            item["modetest_error"] = parsed["_error"]
+        elif isinstance(parsed, dict):
+            mt = parsed.get(connector_id) if connector_id is not None else None
+            if mt:
+                dpms_v = mt.get("dpms_value")
+                if dpms_v is not None:
+                    item["dpms"] = dpms_v
+
+        item["dpms_supported"] = item["dpms"] is not None
+
+        # derive unified power state from hardware
+        # preference: DPMS if available; fallback to enabled/status
+        if item["dpms"] is not None:
+            item["state"] = "on" if item["dpms"] == 0 else "off"
+        elif enabled in ("enabled", "disabled"):
+            item["state"] = "on" if enabled == "enabled" else "off"
+        elif status == "connected":
+            item["state"] = "unknown"
+        else:
+            item["state"] = "disconnected"
+
+        if item["status"] != "connected":
+            item["controllable"] = False
+            item["control_reason"] = "显示器未连接"
+        elif item["dpms_supported"] or item["enabled_writable"]:
+            item["controllable"] = True
+            item["control_reason"] = ""
+        else:
+            item["controllable"] = False
+            if "modetest_error" in item:
+                item["control_reason"] = (
+                    "未发现可用控制属性（DPMS不可用且sysfs不可写）; "
+                    + item["modetest_error"]
+                )
+            else:
+                item["control_reason"] = "未发现可用控制属性（DPMS不可用且sysfs不可写）"
+
+        result.append(item)
+
+    return result
+
+
+def resolve_target_connector(name_or_sys):
+    all_items = build_drm_status()
+    if not all_items:
+        return None, all_items
+
+    if name_or_sys:
+        for it in all_items:
+            if it["sys_name"] == name_or_sys or it["name"] == name_or_sys:
+                return it, all_items
+        return None, all_items
+
+    # default: first connected connector, else first one
+    for it in all_items:
+        if it.get("status") == "connected":
+            return it, all_items
+    return all_items[0], all_items
+
+
+def set_connector_dpms(target, turn_on):
+    if not target:
+        return False, "no target connector"
+    connector_id = target.get("connector_id")
+    if connector_id is None:
+        return False, "connector has no DPMS property"
+
+    value = 0 if turn_on else 3
+    rc, out, err = run_cmd(
+        ["modetest", "-w", f"{connector_id}:DPMS:{value}"],
+        timeout=10,
+    )
+    if rc != 0:
+        return False, (err.strip() or out.strip() or "modetest set DPMS failed")
+    return True, "ok"
+
+
+def set_connector_sysfs_enabled(target, turn_on):
+    if not target:
+        return False, "no target connector"
+    connector_path = target.get("path")
+    if not connector_path:
+        connector_path = os.path.join(DRM_CLASS_PATH, target.get("sys_name", ""))
+    enabled_path = os.path.join(connector_path, "enabled")
+    if not os.path.exists(enabled_path):
+        return False, "connector has no sysfs enabled control"
+
+    # kernel expects string values in this file
+    target_value = "enabled" if turn_on else "disabled"
+    ok, msg = write_text_file(enabled_path, target_value)
+    if not ok:
+        return False, f"write {enabled_path} failed: {msg}"
+
+    now = read_text_file(enabled_path)
+    if now not in ("enabled", "disabled"):
+        return False, f"unexpected sysfs enabled value: {now}"
+    if (turn_on and now != "enabled") or ((not turn_on) and now != "disabled"):
+        return False, f"sysfs enabled verify failed: {now}"
+    return True, "ok"
+
+
+def set_connector_power(target, turn_on):
+    # 1) try DPMS via modetest (preferred)
+    ok, message = set_connector_dpms(target, turn_on)
+    if ok:
+        return True, "dpms", "ok"
+
+    dpms_error = message
+
+    # 2) fallback to sysfs enabled toggle
+    ok2, message2 = set_connector_sysfs_enabled(target, turn_on)
+    if ok2:
+        return True, "sysfs_enabled", "ok"
+
+    return (
+        False,
+        "none",
+        f"dpms failed: {dpms_error}; sysfs fallback failed: {message2}",
+    )
+
+
 def main():
     action = get_query_param("action") or "read"
     if action == "read":
@@ -157,69 +419,83 @@ def main():
         body = read_post_json()
         return write_logind(body)
     if action == "screen":
-        # handle screen blank/poke via setterm
-        state = get_query_param("state") or ""
-        state = state.lower()
+        # DRM-only connector power control (no X environment)
+        state = (get_query_param("state") or "").lower().strip()
+        target_name = (get_query_param("connector") or "").strip()
+        if state not in ("on", "off"):
+            respond({"ok": False, "error": "state must be 'on' or 'off'"})
+
+        target, all_items = resolve_target_connector(target_name)
+        if not target:
+            respond(
+                {
+                    "ok": False,
+                    "error": "connector not found",
+                    "connector": target_name,
+                    "connectors": all_items,
+                }
+            )
+
+        if not target.get("controllable"):
+            respond(
+                {
+                    "ok": False,
+                    "error": target.get("control_reason")
+                    or "target connector is not controllable",
+                    "target": target,
+                }
+            )
+
+        ok, method, message = set_connector_power(target, turn_on=(state == "on"))
+        if not ok:
+            respond(
+                {
+                    "ok": False,
+                    "error": message,
+                    "target": target,
+                }
+            )
+
+        refreshed = build_drm_status()
+        respond(
+            {
+                "ok": True,
+                "message": f"screen {state}",
+                "method": method,
+                "target": target.get("sys_name"),
+                "connectors": refreshed,
+            }
+        )
+
+    if action == "screen_status":
+        # real hardware status via DRM/sysfs
         try:
-            tty = "/dev/tty1"
-            if state in ("off", "blank", "force"):
-                # turn off / blank the console
-                with open(tty, "rb") as fd:
-                    p = subprocess.run(
-                        ["setterm", "--blank", "force", "--term", "linux"],
-                        stdin=fd,
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-            elif state in ("on", "poke"):
-                with open(tty, "rb") as fd:
-                    p = subprocess.run(
-                        ["setterm", "--blank", "poke", "--term", "linux"],
-                        stdin=fd,
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-            else:
-                respond({"ok": False, "error": "missing or unknown state parameter"})
-            if p.returncode != 0:
-                respond(
-                    {
-                        "ok": False,
-                        "error": "setterm failed",
-                        "stdout": p.stdout,
-                        "stderr": p.stderr,
-                    }
+            connectors = build_drm_status()
+            target_name = (get_query_param("connector") or "").strip()
+            selected = None
+            if target_name:
+                for it in connectors:
+                    if (
+                        it.get("sys_name") == target_name
+                        or it.get("name") == target_name
+                    ):
+                        selected = it
+                        break
+            if selected is None and connectors:
+                selected = next(
+                    (it for it in connectors if it.get("status") == "connected"),
+                    connectors[0],
                 )
-            # persist last known state
-            try:
-                with open(SCREEN_STATE_PATH, "w", encoding="utf-8") as sf:
-                    json.dump({"state": state, "ts": int(time.time())}, sf)
-            except Exception:
-                pass
             respond(
                 {
                     "ok": True,
-                    "message": "screen " + state,
-                    "stdout": p.stdout,
-                    "stderr": p.stderr,
+                    "connector": selected.get("sys_name") if selected else None,
+                    "state": selected.get("state") if selected else None,
+                    "connectors": connectors,
                 }
             )
         except Exception as e:
-            respond({"ok": False, "error": "exception: " + str(e)})
-
-    if action == "screen_status":
-        # return last persisted state if available
-        try:
-            if os.path.exists(SCREEN_STATE_PATH):
-                with open(SCREEN_STATE_PATH, "r", encoding="utf-8") as sf:
-                    j = json.load(sf)
-                    respond({"ok": True, "state": j.get("state"), "ts": j.get("ts")})
-            else:
-                respond({"ok": True, "state": None, "ts": None})
-        except Exception as e:
-            respond({"ok": False, "error": "read status failed: " + str(e)})
+            respond({"ok": False, "error": "read DRM status failed: " + str(e)})
     respond({"ok": False, "error": "unknown action"})
 
 
