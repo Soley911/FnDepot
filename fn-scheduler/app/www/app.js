@@ -353,6 +353,7 @@ const buttons = {
   edit: document.getElementById("btnEdit"),
   delete: document.getElementById("btnDelete"),
   run: document.getElementById("btnRun"),
+  stop: document.getElementById("btnStop"),
   toggle: document.getElementById("btnToggle"),
   results: document.getElementById("btnResults"),
   refresh: document.getElementById("btnRefresh"),
@@ -507,6 +508,9 @@ const api = {
   runTask(id) {
     return this.request(`api/tasks/${id}/run`, { method: "POST" });
   },
+  stopTask(id) {
+    return this.request(`api/tasks/${id}/stop`, { method: "POST" });
+  },
   fetchResults(id) {
     return this.request(`api/tasks/${id}/results?limit=50`);
   },
@@ -592,6 +596,7 @@ function updateToolbarState() {
   const selectedCount = state.selectedIds.size;
   buttons.edit.disabled = selectedCount !== 1;
   buttons.run.disabled = selectedCount === 0;
+  buttons.stop.disabled = selectedCount === 0;
   buttons.delete.disabled = selectedCount === 0;
   buttons.toggle.disabled = selectedCount === 0;
   buttons.results.disabled = selectedCount !== 1;
@@ -1305,6 +1310,30 @@ async function runSelectedTasks() {
   }
 }
 
+async function stopSelectedTasks() {
+  const selected = Array.from(state.selectedIds);
+  if (!selected.length) {
+    showToast(_t('prompt.select_task_to_stop'));
+    return;
+  }
+  try {
+    const response = await api.batchTasks("stop", selected);
+    const result = response.result || {};
+    const { stopped = [], not_running = [], missing = [] } = result;
+    const stoppedCount = stopped.length;
+    const notRunningCount = not_running.length;
+    const missingCount = missing.length;
+    const parts = [];
+    if (stoppedCount) parts.push(_t('msg.stopped_n', { n: stoppedCount }));
+    if (notRunningCount) parts.push(_t('msg.not_running_n', { n: notRunningCount }));
+    if (missingCount) parts.push(_t('msg.missing_n', { n: missingCount }));
+    showToast(parts.join(_t('list.sep')) || _t('msg.no_tasks_stopped'));
+    await loadTasks({ silent: true });
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
 async function toggleSelectedTask() {
   const selected = Array.from(state.selectedIds);
   if (!selected.length) {
@@ -1462,6 +1491,7 @@ function attachEventListeners() {
   });
   buttons.delete.addEventListener("click", deleteSelectedTasks);
   buttons.run.addEventListener("click", runSelectedTasks);
+  buttons.stop.addEventListener("click", stopSelectedTasks);
   buttons.toggle.addEventListener("click", toggleSelectedTask);
   buttons.results.addEventListener("click", openResultModal);
   buttons.refresh.addEventListener("click", loadTasks);

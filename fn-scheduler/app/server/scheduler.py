@@ -14,12 +14,13 @@ import socket
 import sqlite3
 import threading
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 
 from typing import Any, Callable, Dict, List, Optional, Set
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from subprocess import CompletedProcess, TimeoutExpired, run
+from subprocess import PIPE, Popen, TimeoutExpired, run
 
 try:
     import grp
@@ -49,6 +50,7 @@ EVENT_TYPE_BOOT = "system_boot"
 EVENT_TYPE_SHUTDOWN = "system_shutdown"
 EVENT_TYPES = {EVENT_TYPE_SCRIPT, EVENT_TYPE_BOOT, EVENT_TYPE_SHUTDOWN}
 
+
 def _detect_default_account() -> str:
     for env_key in ("SCHEDULER_DEFAULT_ACCOUNT", "USERNAME", "USER"):
         value = os.environ.get(env_key)
@@ -58,6 +60,8 @@ def _detect_default_account() -> str:
         return getpass.getuser()
     except Exception:  # pragma: no cover - fallback only
         return "current_user"
+
+
 DEFAULT_ACCOUNT_NAME = _detect_default_account()
 ALLOWED_ACCOUNT_GIDS = (0, 1000, 1001)
 POSIX_ACCOUNT_SUPPORT = os.name == "posix" and pwd is not None and grp is not None
@@ -104,7 +108,7 @@ def isoformat(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None
     # 直接用本地时间的 ISO 格式
-    return dt.replace(microsecond=0).isoformat(sep=' ')
+    return dt.replace(microsecond=0).isoformat(sep=" ")
 
 
 def parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -112,7 +116,7 @@ def parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
     try:
         # 兼容带空格的本地时间字符串
-        dt = datetime.fromisoformat(value.replace('T', ' '))
+        dt = datetime.fromisoformat(value.replace("T", " "))
         # 如果是带时区的，转为本地无时区
         if dt.tzinfo is not None:
             dt = dt.astimezone().replace(tzinfo=None)
@@ -159,7 +163,9 @@ def ensure_account_allowed(account: str) -> str:
     if not POSIX_ACCOUNT_SUPPORT:
         default_account = allowed[0]
         if account and account != default_account:
-            raise ValueError(f"Windows environment only supports using account {default_account}")
+            raise ValueError(
+                f"Windows environment only supports using account {default_account}"
+            )
         return default_account
     if account not in allowed:
         raise ValueError("account must belong to system groups 0/1000/1001")
@@ -169,6 +175,7 @@ def ensure_account_allowed(account: str) -> str:
 ###############################################################################
 # Cron expression parsing
 ###############################################################################
+
 
 class CronExpression:
     """Minimal 5-field cron parser supporting ranges, lists, and steps."""
@@ -268,12 +275,18 @@ class CronExpression:
         else:
             calendar_ok = dom_match or dow_match
 
-        return minute in self.fields[0] and hour in self.fields[1] and month in self.fields[3] and calendar_ok
+        return (
+            minute in self.fields[0]
+            and hour in self.fields[1]
+            and month in self.fields[3]
+            and calendar_ok
+        )
 
 
 ###############################################################################
 # Database layer
 ###############################################################################
+
 
 class Database:
     def __init__(self, path: str):
@@ -299,7 +312,9 @@ class Database:
                 cur.execute(f"PRAGMA user_version={DB_LATEST_VERSION};")
             if version < 2:
                 try:
-                    cur.execute("ALTER TABLE tasks ADD COLUMN event_type TEXT NOT NULL DEFAULT 'script';")
+                    cur.execute(
+                        "ALTER TABLE tasks ADD COLUMN event_type TEXT NOT NULL DEFAULT 'script';"
+                    )
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc).lower():
                         raise
@@ -311,7 +326,9 @@ class Database:
 
         try:
             with self._lock:
-                cur = self._conn.execute("SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='templates'")
+                cur = self._conn.execute(
+                    "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='templates'"
+                )
                 row = cur.fetchone()
                 count = int(row[0]) if row else 0
                 if count == 0:
@@ -400,7 +417,9 @@ class Database:
 
     def get_template(self, template_id: int) -> Optional[Dict[str, Any]]:
         with self._lock:
-            cur = self._conn.execute("SELECT * FROM templates WHERE id=?", (template_id,))
+            cur = self._conn.execute(
+                "SELECT * FROM templates WHERE id=?", (template_id,)
+            )
             row = cur.fetchone()
         return dict(row) if row else None
 
@@ -419,7 +438,9 @@ class Database:
             key = base
             idx = 1
             while True:
-                cur = self._conn.execute("SELECT COUNT(1) FROM templates WHERE key=?", (key,))
+                cur = self._conn.execute(
+                    "SELECT COUNT(1) FROM templates WHERE key=?", (key,)
+                )
                 (count,) = cur.fetchone()
                 if count == 0:
                     break
@@ -441,12 +462,16 @@ class Database:
                 raise ValueError("database integrity error") from exc
         return self.get_template(tid)  # type: ignore
 
-    def update_template(self, template_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def update_template(
+        self, template_id: int, payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         existing = self.get_template(template_id)
         if not existing:
             return None
         name = payload.get("name", existing.get("name", "")).strip()
-        script_body = payload.get("script_body", existing.get("script_body", "")).strip()
+        script_body = payload.get(
+            "script_body", existing.get("script_body", "")
+        ).strip()
         key = payload.get("key", existing.get("key", "")).strip()
         if not name:
             raise ValueError("template name is required")
@@ -505,7 +530,9 @@ class Database:
     def export_templates(self) -> Dict[str, Dict[str, str]]:
         out: Dict[str, Dict[str, str]] = {}
         with self._lock:
-            cur = self._conn.execute("SELECT key, name, script_body FROM templates ORDER BY id ASC")
+            cur = self._conn.execute(
+                "SELECT key, name, script_body FROM templates ORDER BY id ASC"
+            )
             for row in cur.fetchall():
                 out[row[0]] = {"name": row[1], "script_body": row[2]}
         return out
@@ -565,57 +592,59 @@ class Database:
                 raise ValueError("database integrity error") from exc
         return self.get_task(task_id)  # type: ignore
 
-    def update_task(self, task_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            existing = self.get_task(task_id)
-            if not existing:
-                return None
-            # 检查 Cron 表达式是否变更，变更则强制 next_run_at 重新计算
-            old_expr = existing.get("schedule_expression")
-            new_expr = payload.get("schedule_expression", old_expr)
-            if (
-                existing.get("trigger_type") == "schedule"
-                and old_expr != new_expr
-                and new_expr
-            ):
-                payload = dict(payload)
-                payload["next_run_at"] = None  # 让 _prepare_task_payload 自动计算
-            task = self._prepare_task_payload({**existing, **payload}, is_update=True)
-            task["updated_at"] = isoformat(time_now())
-            try:
-                with self._lock:
-                    self._conn.execute(
-                        """
+    def update_task(
+        self, task_id: int, payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        existing = self.get_task(task_id)
+        if not existing:
+            return None
+        # 检查 Cron 表达式是否变更，变更则强制 next_run_at 重新计算
+        old_expr = existing.get("schedule_expression")
+        new_expr = payload.get("schedule_expression", old_expr)
+        if (
+            existing.get("trigger_type") == "schedule"
+            and old_expr != new_expr
+            and new_expr
+        ):
+            payload = dict(payload)
+            payload["next_run_at"] = None  # 让 _prepare_task_payload 自动计算
+        task = self._prepare_task_payload({**existing, **payload}, is_update=True)
+        task["updated_at"] = isoformat(time_now())
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
                         UPDATE tasks SET
                             name=?, account=?, trigger_type=?, schedule_expression=?, condition_script=?,
                             condition_interval=?, event_type=?, is_active=?, pre_task_ids=?, script_body=?,
                             last_run_at=?, next_run_at=?, last_condition_check_at=?, updated_at=?
                         WHERE id=?
                         """,
-                        (
-                            task["name"],
-                            task["account"],
-                            task["trigger_type"],
-                            task.get("schedule_expression"),
-                            task.get("condition_script"),
-                            task["condition_interval"],
-                            task["event_type"],
-                            1 if task["is_active"] else 0,
-                            json.dumps(task["pre_task_ids"]),
-                            task["script_body"],
-                            task.get("last_run_at"),
-                            task.get("next_run_at"),
-                            task.get("last_condition_check_at"),
-                            task["updated_at"],
-                            task_id,
-                        ),
-                    )
-                    self._conn.commit()
-            except sqlite3.IntegrityError as exc:
-                msg = str(exc).lower()
-                if "unique" in msg or "tasks.name" in msg:
-                    raise ValueError("task name already exists") from exc
-                raise ValueError("database integrity error") from exc
-            return self.get_task(task_id)
+                    (
+                        task["name"],
+                        task["account"],
+                        task["trigger_type"],
+                        task.get("schedule_expression"),
+                        task.get("condition_script"),
+                        task["condition_interval"],
+                        task["event_type"],
+                        1 if task["is_active"] else 0,
+                        json.dumps(task["pre_task_ids"]),
+                        task["script_body"],
+                        task.get("last_run_at"),
+                        task.get("next_run_at"),
+                        task.get("last_condition_check_at"),
+                        task["updated_at"],
+                        task_id,
+                    ),
+                )
+                self._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            msg = str(exc).lower()
+            if "unique" in msg or "tasks.name" in msg:
+                raise ValueError("task name already exists") from exc
+            raise ValueError("database integrity error") from exc
+        return self.get_task(task_id)
 
     def delete_task(self, task_id: int) -> bool:
         with self._lock:
@@ -645,7 +674,9 @@ class Database:
             )
             self._conn.commit()
 
-    def fetch_results(self, task_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    def fetch_results(
+        self, task_id: int, limit: int = 50, offset: int = 0
+    ) -> List[Dict[str, Any]]:
         with self._lock:
             cur = self._conn.execute(
                 "SELECT * FROM task_results WHERE task_id=? ORDER BY started_at DESC LIMIT ? OFFSET ?",
@@ -666,7 +697,9 @@ class Database:
     def delete_results(self, task_id: int, result_id: Optional[int] = None) -> int:
         with self._lock:
             if result_id is None:
-                cur = self._conn.execute("DELETE FROM task_results WHERE task_id=?", (task_id,))
+                cur = self._conn.execute(
+                    "DELETE FROM task_results WHERE task_id=?", (task_id,)
+                )
             else:
                 cur = self._conn.execute(
                     "DELETE FROM task_results WHERE task_id=? AND id=?",
@@ -693,6 +726,27 @@ class Database:
             (count,) = cur.fetchone()
         return count > 0
 
+    def finalize_stale_running_instances(
+        self, task_id: int, reason: str = "stopped by user"
+    ) -> int:
+        now = isoformat(time_now())
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE task_results
+                SET status='failed',
+                    finished_at=?,
+                    log=CASE
+                        WHEN log IS NULL OR log='' THEN ?
+                        ELSE log || '\n' || ?
+                    END
+                WHERE task_id=? AND status='running'
+                """,
+                (now, reason, reason, task_id),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
     def update_last_run(self, task_id: int) -> None:
         with self._lock:
             self._conn.execute(
@@ -701,7 +755,9 @@ class Database:
             )
             self._conn.commit()
 
-    def schedule_next_run(self, task_id: int, expression: str, base: Optional[datetime] = None) -> Optional[str]:
+    def schedule_next_run(
+        self, task_id: int, expression: str, base: Optional[datetime] = None
+    ) -> Optional[str]:
         if not expression:
             return None
         cron = CronExpression(expression)
@@ -736,7 +792,9 @@ class Database:
             rows = [self._row_to_dict(row) for row in cur.fetchall()]
         return rows
 
-    def fetch_event_tasks(self, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def fetch_event_tasks(
+        self, event_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         query = "SELECT * FROM tasks WHERE trigger_type='event' AND is_active=1"
         params: List[Any] = []
         if event_type:
@@ -749,7 +807,9 @@ class Database:
         return rows
 
     # Payload utilities ---------------------------------------------------
-    def _prepare_task_payload(self, payload: Dict[str, Any], is_update: bool) -> Dict[str, Any]:
+    def _prepare_task_payload(
+        self, payload: Dict[str, Any], is_update: bool
+    ) -> Dict[str, Any]:
         trigger_type = payload.get("trigger_type", "schedule")
         if trigger_type not in {"schedule", "event"}:
             raise ValueError("trigger_type must be 'schedule' or 'event'")
@@ -769,12 +829,24 @@ class Database:
 
         is_active = bool(payload.get("is_active", True))
         schedule_expression_raw = payload.get("schedule_expression")
-        schedule_expression = schedule_expression_raw.strip() if isinstance(schedule_expression_raw, str) else schedule_expression_raw
+        schedule_expression = (
+            schedule_expression_raw.strip()
+            if isinstance(schedule_expression_raw, str)
+            else schedule_expression_raw
+        )
         condition_script_raw = payload.get("condition_script")
-        condition_script = condition_script_raw.strip() if isinstance(condition_script_raw, str) else condition_script_raw
+        condition_script = (
+            condition_script_raw.strip()
+            if isinstance(condition_script_raw, str)
+            else condition_script_raw
+        )
         condition_interval = max(10, int(payload.get("condition_interval", 60)))
         event_type_raw = payload.get("event_type")
-        event_type = (event_type_raw or EVENT_TYPE_SCRIPT).strip() if isinstance(event_type_raw, str) else (event_type_raw or EVENT_TYPE_SCRIPT)
+        event_type = (
+            (event_type_raw or EVENT_TYPE_SCRIPT).strip()
+            if isinstance(event_type_raw, str)
+            else (event_type_raw or EVENT_TYPE_SCRIPT)
+        )
         pre_task_ids = payload.get("pre_task_ids") or []
         if isinstance(pre_task_ids, str):
             try:
@@ -837,7 +909,11 @@ class Database:
 # Scheduler engine
 ###############################################################################
 
+
 class TaskRunner(threading.Thread):
+    _running_lock = threading.RLock()
+    _running_processes: Dict[int, Set[Popen[str]]] = {}
+
     def __init__(self, db: Database, task: Dict[str, Any], trigger_reason: str):
         super().__init__(daemon=True)
         self.db = db
@@ -848,8 +924,11 @@ class TaskRunner(threading.Thread):
         task_id = self.task["id"]
         logger.info("Executing task %s (%s)", task_id, self.trigger_reason)
         result_id = self.db.record_result_start(task_id, self.trigger_reason)
+        execution_timeout = None  # TASK_TIMEOUT
         try:
-            log_text, status = self._execute_script(self.task["script_body"], TASK_TIMEOUT)
+            log_text, status = self._execute_script(
+                self.task["script_body"], execution_timeout
+            )
         except Exception as exc:  # pylint: disable=broad-except
             status = "failed"
             log_text = f"task execution exception: {exc!r}"
@@ -857,10 +936,11 @@ class TaskRunner(threading.Thread):
             self.db.finalize_result(result_id, status, log_text)
             self.db.update_last_run(task_id)
 
-    def _execute_script(self, script: str, timeout: int) -> tuple[str, str]:
+    def _execute_script(self, script: str, timeout: Optional[int]) -> tuple[str, str]:
         cmd = self._build_command(script)
         env = os.environ.copy()
         preexec_fn, home_dir = self._prepare_account_context()
+        task_id = int(self.task["id"])
         if home_dir:
             env["HOME"] = home_dir
         env.update(
@@ -872,22 +952,185 @@ class TaskRunner(threading.Thread):
             }
         )
         try:
-            completed: CompletedProcess[str] = run(
+            process: Popen[str] = Popen(
                 cmd,
-                capture_output=True,
+                stdout=PIPE,
+                stderr=PIPE,
                 text=True,
-                timeout=timeout,
-                check=False,
                 env=env,
                 preexec_fn=preexec_fn,
             )
+            self._register_process(task_id, process)
+            stdout, stderr = process.communicate(timeout=timeout)
         except TimeoutExpired as exc:
+            try:
+                process.kill()  # type: ignore[name-defined]
+                process.communicate()
+            except Exception:
+                pass
             return f"task execution timeout (> {timeout}s): {exc}", "failed"
         except Exception as exc:  # pylint: disable=broad-except
             return str(exc), "failed"
-        output = (completed.stdout or "") + (completed.stderr or "")
-        status = "success" if completed.returncode == 0 else "failed"
+        finally:
+            proc = locals().get("process")
+            if proc is not None:
+                self._unregister_process(task_id, proc)
+        output = (stdout or "") + (stderr or "")
+        status = "success" if process.returncode == 0 else "failed"
         return output.strip(), status
+
+    @classmethod
+    def _register_process(cls, task_id: int, process: Popen[str]) -> None:
+        with cls._running_lock:
+            cls._running_processes.setdefault(task_id, set()).add(process)
+
+    @classmethod
+    def _unregister_process(cls, task_id: int, process: Popen[str]) -> None:
+        with cls._running_lock:
+            processes = cls._running_processes.get(task_id)
+            if not processes:
+                return
+            processes.discard(process)
+            if not processes:
+                cls._running_processes.pop(task_id, None)
+
+    @classmethod
+    def terminate_task_processes(
+        cls, task_id: int, grace_seconds: float = 3.0
+    ) -> Dict[str, int]:
+        with cls._running_lock:
+            processes = list(cls._running_processes.get(task_id, set()))
+
+        fallback_pids: List[int] = []
+        if not processes:
+            fallback_pids = cls._find_task_pids(task_id)
+            if not fallback_pids:
+                return {
+                    "targeted": 0,
+                    "terminated": 0,
+                    "killed": 0,
+                    "already_exited": 0,
+                }
+            return cls._terminate_pids(fallback_pids, grace_seconds)
+
+        terminated = 0
+        killed = 0
+        already_exited = 0
+
+        alive_after_terminate: List[Popen[str]] = []
+        for process in processes:
+            if process.poll() is not None:
+                already_exited += 1
+                continue
+            try:
+                process.terminate()
+                terminated += 1
+                alive_after_terminate.append(process)
+            except Exception:
+                if process.poll() is not None:
+                    already_exited += 1
+
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        survivors: List[Popen[str]] = []
+        for process in alive_after_terminate:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                try:
+                    process.wait(timeout=remaining)
+                except TimeoutExpired:
+                    pass
+            if process.poll() is None:
+                survivors.append(process)
+
+        for process in survivors:
+            try:
+                process.kill()
+                killed += 1
+            except Exception:
+                pass
+
+        return {
+            "targeted": len(processes),
+            "terminated": terminated,
+            "killed": killed,
+            "already_exited": already_exited,
+        }
+
+    @staticmethod
+    def _find_task_pids(task_id: int) -> List[int]:
+        if os.name != "posix":
+            return []
+        target = f"SCHEDULER_TASK_ID={task_id}".encode("utf-8")
+        current_pid = os.getpid()
+        found: Set[int] = set()
+        proc_root = "/proc"
+        try:
+            entries = os.listdir(proc_root)
+        except Exception:
+            return []
+
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == current_pid:
+                continue
+            env_path = os.path.join(proc_root, entry, "environ")
+            try:
+                with open(env_path, "rb") as env_file:
+                    content = env_file.read()
+            except Exception:
+                continue
+            if target in content:
+                found.add(pid)
+        return sorted(found)
+
+    @staticmethod
+    def _terminate_pids(pids: List[int], grace_seconds: float = 3.0) -> Dict[str, int]:
+        terminated = 0
+        killed = 0
+        already_exited = 0
+        alive_after_terminate: List[int] = []
+
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                terminated += 1
+                alive_after_terminate.append(pid)
+            except ProcessLookupError:
+                already_exited += 1
+            except PermissionError:
+                continue
+
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        survivors: List[int] = []
+        for pid in alive_after_terminate:
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    break
+                time.sleep(0.1)
+            else:
+                survivors.append(pid)
+
+        for pid in survivors:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except ProcessLookupError:
+                already_exited += 1
+            except PermissionError:
+                continue
+
+        return {
+            "targeted": len(pids),
+            "terminated": terminated,
+            "killed": killed,
+            "already_exited": already_exited,
+        }
 
     @staticmethod
     def _build_command(script: str) -> List[str]:
@@ -903,7 +1146,9 @@ class TaskRunner(threading.Thread):
             ]
         return ["/bin/bash", "-c", script]
 
-    def _prepare_account_context(self) -> tuple[Optional[Callable[[], None]], Optional[str]]:
+    def _prepare_account_context(
+        self,
+    ) -> tuple[Optional[Callable[[], None]], Optional[str]]:
         if not POSIX_ACCOUNT_SUPPORT:
             return (None, None)
         account = self.task.get("account")
@@ -912,7 +1157,9 @@ class TaskRunner(threading.Thread):
         try:
             pw_record = pwd.getpwnam(account)  # type: ignore[attr-defined]
         except KeyError as exc:
-            raise RuntimeError(f"account {account} does not exist, cannot execute task") from exc
+            raise RuntimeError(
+                f"account {account} does not exist, cannot execute task"
+            ) from exc
 
         target_uid = pw_record.pw_uid
         target_gid = pw_record.pw_gid
@@ -922,13 +1169,17 @@ class TaskRunner(threading.Thread):
             return (None, pw_record.pw_dir)
 
         if current_uid != 0:
-            raise PermissionError("scheduler service must run as root to switch task execution account")
+            raise PermissionError(
+                "scheduler service must run as root to switch task execution account"
+            )
 
         supplemental: List[int] = []
         try:
             supplemental = [entry.gr_gid for entry in grp.getgrall() if account in entry.gr_mem]  # type: ignore[attr-defined]
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("failed to get supplemental groups for account %s: %s", account, exc)
+            logger.warning(
+                "failed to get supplemental groups for account %s: %s", account, exc
+            )
 
         groups = sorted(set([target_gid, *supplemental]))
 
@@ -987,9 +1238,13 @@ class SchedulerEngine:
                 )
                 # 重新安排到下一个可用时间，但不执行错过的运行
                 try:
-                    self.db.schedule_next_run(task["id"], task["schedule_expression"], self.started_at)
+                    self.db.schedule_next_run(
+                        task["id"], task["schedule_expression"], self.started_at
+                    )
                 except Exception:
-                    logger.exception("Failed to reschedule expired task %s", task.get("id"))
+                    logger.exception(
+                        "Failed to reschedule expired task %s", task.get("id")
+                    )
                 continue
             if self.db.has_running_instance(task["id"]):
                 logger.info("Task %s still running, skip", task["id"])
@@ -997,7 +1252,11 @@ class SchedulerEngine:
             if not self._dependencies_met(task):
                 logger.info("Task %s waiting for dependencies", task["id"])
                 # re-schedule shortly in future to retry
-                self.db.schedule_next_run(task["id"], task["schedule_expression"], moment + timedelta(minutes=1))
+                self.db.schedule_next_run(
+                    task["id"],
+                    task["schedule_expression"],
+                    moment + timedelta(minutes=1),
+                )
                 continue
             TaskRunner(self.db, task, "schedule").start()
             self.db.schedule_next_run(task["id"], task["schedule_expression"], moment)
@@ -1051,7 +1310,9 @@ class SchedulerEngine:
     def _trigger_system_event(self, event_type: str) -> None:
         if event_type not in {EVENT_TYPE_BOOT, EVENT_TYPE_SHUTDOWN}:
             return
-        trigger_reason = "system_boot" if event_type == EVENT_TYPE_BOOT else "system_shutdown"
+        trigger_reason = (
+            "system_boot" if event_type == EVENT_TYPE_BOOT else "system_shutdown"
+        )
         runners: List[TaskRunner] = []
         for task in self.db.fetch_event_tasks(event_type=event_type):
             if self.db.has_running_instance(task["id"]):
@@ -1068,6 +1329,7 @@ class SchedulerEngine:
 ###############################################################################
 # HTTP layer
 ###############################################################################
+
 
 class SchedulerContext:
     def __init__(self, db: Database, engine: SchedulerEngine):
@@ -1123,7 +1385,9 @@ class SchedulerHTTPServer(ThreadingHTTPServer):
                 self.address_family = socket.AF_INET6
                 if len(server_address) == 2:
                     server_address = (host, port, 0, 0)
-            super().__init__(server_address, handler_class, bind_and_activate=bind_and_activate)
+            super().__init__(
+                server_address, handler_class, bind_and_activate=bind_and_activate
+            )
             if use_ipv6:
                 try:
                     self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
@@ -1182,11 +1446,12 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Unsupported path")
 
-
     # API routing ---------------------------------------------------------
     def _handle_api(self, method: str) -> None:
         parsed = urlparse(self.path)
-        segments = [segment for segment in parsed.path.split("/") if segment][1:]  # drop 'api'
+        segments = [segment for segment in parsed.path.split("/") if segment][
+            1:
+        ]  # drop 'api'
         try:
             if not segments:
                 self._json_response({"message": "scheduler api"})
@@ -1218,7 +1483,10 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             self._json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("API error: %s", exc)
-            self._json_response({"error": "internal server error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json_response(
+                {"error": "internal server error"},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def _list_accounts(self) -> None:
         payload = {
@@ -1257,7 +1525,9 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                 except sqlite3.IntegrityError as exc:
                     # Convert DB constraint errors (e.g. unique name) to client 400
                     logger.info("create_task integrity error: %s", exc)
-                    self._json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    self._json_response(
+                        {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST
+                    )
                     return
                 self._json_response(task, status=HTTPStatus.CREATED)
                 return
@@ -1281,7 +1551,9 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                     task = ctx.db.update_task(task_id, payload)
                 except sqlite3.IntegrityError as exc:
                     logger.info("update_task integrity error: %s", exc)
-                    self._json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    self._json_response(
+                        {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST
+                    )
                     return
                 if not task:
                     self.send_error(HTTPStatus.NOT_FOUND)
@@ -1299,6 +1571,9 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             action = remainder[1]
             if action == "run" and method == "POST":
                 self._run_task(task_id)
+                return
+            if action == "stop" and method == "POST":
+                self._stop_task(task_id)
                 return
             if action == "toggle" and method == "POST":
                 payload = self._read_json() or {}
@@ -1335,7 +1610,10 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                 return
             # 支持直接上传 mapping 对象
             if not isinstance(payload, dict):
-                self._json_response({"error": "import data should be an object mapping"}, status=HTTPStatus.BAD_REQUEST)
+                self._json_response(
+                    {"error": "import data should be an object mapping"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
             invalid_keys = []
             for k, v in payload.items():
@@ -1343,10 +1621,15 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                     invalid_keys.append(k)
                     continue
                 # 必须包含 script_body 字段且为字符串
-                if not isinstance(v.get("script_body"), str) or not v.get("script_body"):
+                if not isinstance(v.get("script_body"), str) or not v.get(
+                    "script_body"
+                ):
                     invalid_keys.append(k)
             if invalid_keys:
-                self._json_response({"error": "invalid template entries", "invalid_keys": invalid_keys}, status=HTTPStatus.BAD_REQUEST)
+                self._json_response(
+                    {"error": "invalid template entries", "invalid_keys": invalid_keys},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
             summary = ctx.db.import_templates(payload)
             self._json_response({"imported": summary})
@@ -1411,7 +1694,7 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
         if not task_ids:
             raise ValueError("task_ids must contain valid task ids")
 
-        if action not in {"delete", "enable", "disable", "run"}:
+        if action not in {"delete", "enable", "disable", "run", "stop"}:
             raise ValueError("action is not supported")
 
         result: Dict[str, List[int]] = {"missing": []}
@@ -1443,13 +1726,35 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                 if ctx.db.has_running_instance(task_id):
                     result.setdefault("running", []).append(task_id)
                     continue
-                if not ctx.engine._dependencies_met(task):  # pylint: disable=protected-access
+                if not ctx.engine._dependencies_met(
+                    task
+                ):  # pylint: disable=protected-access
                     result.setdefault("blocked", []).append(task_id)
                     continue
                 runner = TaskRunner(ctx.db, task, "manual")
                 runner.start()
                 runners.append(runner)
                 result.setdefault("queued", []).append(task_id)
+                continue
+
+            if action == "stop":
+                summary = TaskRunner.terminate_task_processes(task_id)
+                if summary["targeted"] > 0 and (
+                    summary["terminated"] > 0 or summary["killed"] > 0
+                ):
+                    result.setdefault("stopped", []).append(task_id)
+                else:
+                    stale_cleared = 0
+                    if ctx.db.has_running_instance(task_id):
+                        stale_cleared = ctx.db.finalize_stale_running_instances(
+                            task_id,
+                            reason="stopped by user (no live process found)",
+                        )
+                    if stale_cleared > 0:
+                        result.setdefault("stopped", []).append(task_id)
+                    else:
+                        result.setdefault("not_running", []).append(task_id)
+                continue
 
         payload = {"action": action, "result": result}
         self._json_response(payload)
@@ -1461,13 +1766,41 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if ctx.db.has_running_instance(task_id):
-            self._json_response({"error": "task is running"}, status=HTTPStatus.CONFLICT)
+            self._json_response(
+                {"error": "task is running"}, status=HTTPStatus.CONFLICT
+            )
             return
         if not ctx.engine._dependencies_met(task):  # pylint: disable=protected-access
-            self._json_response({"error": "dependencies are not met"}, status=HTTPStatus.BAD_REQUEST)
+            self._json_response(
+                {"error": "dependencies are not met"}, status=HTTPStatus.BAD_REQUEST
+            )
             return
         TaskRunner(ctx.db, task, "manual").start()
         self._json_response({"queued": True})
+
+    def _stop_task(self, task_id: int) -> None:
+        ctx: SchedulerContext = self.server.app_context  # type: ignore[attr-defined]
+        task = ctx.db.get_task(task_id)
+        if not task:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        summary = TaskRunner.terminate_task_processes(task_id)
+        stopped = summary["targeted"] > 0 and (
+            summary["terminated"] > 0 or summary["killed"] > 0
+        )
+        if not stopped and ctx.db.has_running_instance(task_id):
+            stale_cleared = ctx.db.finalize_stale_running_instances(
+                task_id,
+                reason="stopped by user (no live process found)",
+            )
+            stopped = stale_cleared > 0
+        if not stopped:
+            self._json_response(
+                {"stopped": False, "reason": "not_running", "summary": summary},
+                status=HTTPStatus.CONFLICT,
+            )
+            return
+        self._json_response({"stopped": True, "summary": summary})
 
     def _toggle_task(self, task_id: int, payload: Dict[str, Any]) -> None:
         ctx: SchedulerContext = self.server.app_context  # type: ignore[attr-defined]
@@ -1491,21 +1824,25 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
         # Support: GET /api/fs/list?path=... , GET /api/fs/read?path=... and POST /api/fs/write?path=...
         # determine action from path segment first so we can allow POST for 'write'
         action = remainder[0] if remainder else "list"
-        if action == 'write' and method != 'POST':
+        if action == "write" and method != "POST":
             self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
             return
-        if action in ('list', 'read') and method != 'GET':
+        if action in ("list", "read") and method != "GET":
             self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
             return
         query = parse_qs(urlparse(self.path).query)
         query_path = query.get("path", [None])[0]
         header_path = None
         try:
-            header_path = self.headers.get('X-FS-Path')
+            header_path = self.headers.get("X-FS-Path")
         except Exception:
             header_path = None
         # prefer explicit header (proxy-friendly), then query, else try path-in-segment, finally default '/'
-        path = header_path if header_path is not None else (query_path if query_path is not None else None)
+        path = (
+            header_path
+            if header_path is not None
+            else (query_path if query_path is not None else None)
+        )
         if path is None:
             # check if client encoded the desired path as the next path segment: /api/fs/list/%2Ftmp
             try:
@@ -1516,7 +1853,7 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 path = None
         if path is None:
-            path = '/'
+            path = "/"
         # normalize input path
         try:
             # allow absolute paths; otherwise treat relative to server root
@@ -1527,12 +1864,20 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             else:
                 target = os.path.normpath(path)
         except Exception:
-            self._json_response({"error": "invalid path"}, status=HTTPStatus.BAD_REQUEST)
+            self._json_response(
+                {"error": "invalid path"}, status=HTTPStatus.BAD_REQUEST
+            )
             return
 
         # Log incoming request path, parsed query/header path and resolved filesystem target
         try:
-            logger.info("_handle_fs request: raw_path=%s, query_path=%s, header_path=%s, resolved_target=%s", self.path, query_path, header_path, target)
+            logger.info(
+                "_handle_fs request: raw_path=%s, query_path=%s, header_path=%s, resolved_target=%s",
+                self.path,
+                query_path,
+                header_path,
+                target,
+            )
         except Exception:
             pass
 
@@ -1559,17 +1904,23 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             entries = []
             with os.scandir(target) as it:
                 for entry in sorted(it, key=lambda e: (not e.is_dir(), e.name.lower())):
-                    entries.append({
-                        "name": entry.name,
-                        "path": os.path.join(target, entry.name),
-                        "isdir": entry.is_dir(),
-                    })
+                    entries.append(
+                        {
+                            "name": entry.name,
+                            "path": os.path.join(target, entry.name),
+                            "isdir": entry.is_dir(),
+                        }
+                    )
             self._json_response({"files": entries})
         except PermissionError:
-            self._json_response({"error": "permission denied"}, status=HTTPStatus.FORBIDDEN)
+            self._json_response(
+                {"error": "permission denied"}, status=HTTPStatus.FORBIDDEN
+            )
         except Exception as exc:
             logger.exception("_list_fs error: %s", exc)
-            self._json_response({"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json_response(
+                {"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
 
     def _read_fs(self, target: str) -> None:
         # Return file content as plain text
@@ -1598,7 +1949,9 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.FORBIDDEN, "Permission denied")
         except Exception as exc:
             logger.exception("_read_fs error: %s", exc)
-            self._json_response({"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json_response(
+                {"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
 
     def _write_fs(self, target: str) -> None:
         # Write provided content (JSON body {"content": "..."}) to target path
@@ -1606,34 +1959,47 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if payload is None:
                 return
-            if not isinstance(payload, dict) or 'content' not in payload:
-                self._json_response({"error": "missing content"}, status=HTTPStatus.BAD_REQUEST)
+            if not isinstance(payload, dict) or "content" not in payload:
+                self._json_response(
+                    {"error": "missing content"}, status=HTTPStatus.BAD_REQUEST
+                )
                 return
-            content = payload.get('content', '')
+            content = payload.get("content", "")
             if not isinstance(content, str):
-                self._json_response({"error": "content must be a string"}, status=HTTPStatus.BAD_REQUEST)
+                self._json_response(
+                    {"error": "content must be a string"}, status=HTTPStatus.BAD_REQUEST
+                )
                 return
-            parent = os.path.dirname(target) or '/'
+            parent = os.path.dirname(target) or "/"
             # Ensure parent directory exists (try to create)
             if not os.path.exists(parent):
                 try:
                     os.makedirs(parent, exist_ok=True)
                 except Exception:
-                    self._json_response({"error": "parent directory missing and cannot be created"}, status=HTTPStatus.BAD_REQUEST)
+                    self._json_response(
+                        {"error": "parent directory missing and cannot be created"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
                     return
             # write file (utf-8)
             try:
-                with open(target, 'wb') as fh:
-                    fh.write(content.encode('utf-8'))
+                with open(target, "wb") as fh:
+                    fh.write(content.encode("utf-8"))
                 self._json_response({"written": True, "path": target})
             except PermissionError:
-                self._json_response({"error": "permission denied"}, status=HTTPStatus.FORBIDDEN)
+                self._json_response(
+                    {"error": "permission denied"}, status=HTTPStatus.FORBIDDEN
+                )
             except Exception as exc:
                 logger.exception("_write_fs error: %s", exc)
-                self._json_response({"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                self._json_response(
+                    {"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR
+                )
         except Exception as exc:
             logger.exception("_write_fs top-level error: %s", exc)
-            self._json_response({"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._json_response(
+                {"error": "internal error"}, status=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
 
     def _health(self) -> None:
         ctx: SchedulerContext = self.server.app_context  # type: ignore[attr-defined]
@@ -1651,12 +2017,22 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
         if not raw:
             return {}
         try:
-            return json.loads(raw.decode("utf-8"))
+            payload = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
-            self._json_response({"error": "Invalid JSON"}, status=HTTPStatus.BAD_REQUEST)
+            self._json_response(
+                {"error": "Invalid JSON"}, status=HTTPStatus.BAD_REQUEST
+            )
             return None
+        if not isinstance(payload, dict):
+            self._json_response(
+                {"error": "JSON body must be an object"}, status=HTTPStatus.BAD_REQUEST
+            )
+            return None
+        return payload
 
-    def _json_response(self, payload: Any, status: HTTPStatus | int = HTTPStatus.OK) -> None:
+    def _json_response(
+        self, payload: Any, status: HTTPStatus | int = HTTPStatus.OK
+    ) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1683,7 +2059,6 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Authentication required")
 
-
     def _ensure_base_path(self) -> bool:
         base_path = getattr(self.server, "base_path", "/")  # type: ignore[attr-defined]
         if base_path in ("", "/"):
@@ -1703,6 +2078,7 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
 ###############################################################################
 # Entrypoint
 ###############################################################################
+
 
 def run_server(
     db_path: str,
@@ -1792,6 +2168,7 @@ def run_server(
                     os.unlink(created_unix_socket)
             except Exception:
                 pass
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scheduler Service")
