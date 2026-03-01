@@ -10,6 +10,40 @@ log_msg() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >>${LOG_FILE}
 }
 
+insmod_from_file() {
+  [ -z "${1}" ] && return 1
+  local module_file module_name dep_modules
+  module_file="$1"
+  module_name=$(modinfo -F name "${module_file}" 2>/dev/null)
+  dep_modules=$(modinfo -F depends "${module_file}" 2>/dev/null | tr ',' ' ')
+  if [ -n "${dep_modules}" ]; then
+    for dep in ${dep_modules}; do
+      if ! lsmod | grep -q "^${dep}\b"; then
+        modprobe "${dep}"
+      fi
+    done
+  fi
+  lsmod | grep -q "^${module_name}\b" && rmmod "${module_name}"
+  insmod "${module_file}"
+}
+
+rmmod_from_file() {
+  [ -z "${1}" ] && return 1
+  local module_file module_name dep_modules
+  module_file="$1"
+  module_name=$(modinfo -F name "${module_file}" 2>/dev/null)
+  # shellcheck disable=SC2034
+  dep_modules=$(modinfo -F depends "${module_file}" 2>/dev/null | tr ',' ' ')
+  # if [ -n "${dep_modules}" ]; then
+  #   for dep in ${dep_modules}; do
+  #     if lsmod | grep -q "^${dep}\b"; then
+  #       modprobe -r "${dep}"
+  #     fi
+  #   done
+  # fi
+  lsmod | grep -q "^${module_name}\b" && rmmod "${module_name}"
+}
+
 start_process() {
   if status; then
     return 0
@@ -24,15 +58,15 @@ start_process() {
   [ -L "/lib/firmware/aic8800D80" ] && rm -f "/lib/firmware/aic8800D80"
   [ ! -L "/lib/firmware/aic8800D80" ] && ln -s "${TRIM_APPDEST}/server/fw/aic8800D80" "/lib/firmware/aic8800D80"
 
-  insmod "${TRIM_APPDEST}/server/src/aic_load_fw/aic_load_fw.ko" >>${LOG_FILE} 2>&1
-  insmod "${TRIM_APPDEST}/server/src/aic8800_fdrv/aic8800_fdrv.ko" >>${LOG_FILE} 2>&1
+  insmod_from_file "${TRIM_APPDEST}/server/src/aic_load_fw/aic_load_fw.ko" >>${LOG_FILE} 2>&1
+  insmod_from_file "${TRIM_APPDEST}/server/src/aic8800_fdrv/aic8800_fdrv.ko" >>${LOG_FILE} 2>&1
   return 0
 }
 
 stop_process() {
   log_msg "Stopping process ..."
-  rmmod "${TRIM_APPDEST}/server/src/aic8800_fdrv/aic8800_fdrv.ko" >>${LOG_FILE} 2>&1
-  rmmod "${TRIM_APPDEST}/server/src/aic_load_fw/aic_load_fw.ko" >>${LOG_FILE} 2>&1
+  rmmod_from_file "${TRIM_APPDEST}/server/src/aic8800_fdrv/aic8800_fdrv.ko" >>${LOG_FILE} 2>&1
+  rmmod_from_file "${TRIM_APPDEST}/server/src/aic_load_fw/aic_load_fw.ko" >>${LOG_FILE} 2>&1
 
   [ -L "/lib/firmware/aic8800D80" ] && rm -f "/lib/firmware/aic8800D80"
 
