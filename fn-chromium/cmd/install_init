@@ -2,4 +2,9 @@
 
 ### This script is called before the user installs the application.
 
+if [ -d "/var/apps/docker-chromium" ]; then
+  echo "该应用不能与官方商店的浏览器共存,请先卸载官方商店的浏览器后再安装此应用。" >$TRIM_TEMP_LOGFILE
+  exit 1
+fi
+
 exit 0

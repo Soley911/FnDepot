@@ -5,9 +5,7 @@
       "desc": "Chromium",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
-      "protocol": "http",
-      "port": "${wizard_port}",
-      "url": "${wizard_base_path}",
+      "url": "/chromium/",
       "allUsers": true,
       "control": {
         "accessPerm": "readonly"

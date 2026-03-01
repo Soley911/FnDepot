@@ -9,15 +9,15 @@ services:
       - LC_ALL=zh_CN.UTF-8
       - CUSTOM_USER=${wizard_username:-admin}
       - PASSWORD=${wizard_password:-admin}
-      - SUBFOLDER=${wizard_base_path:-/chromium/}
+      - SUBFOLDER=/chromium/
       # - CHROME_CLI=http://localhost/
     devices:
       - /dev/dri:/dev/dri
     volumes:
       - /var/apps/fn-chromium/shares/chromium/config:/config
     ports:
-      - ${wizard_port:-4000}:3000
-      # - ${wizard_port:-4001}:3001
+      - 3000:3000
+      - 3001:3001
     shm_size: "1gb"
     restart: unless-stopped
     networks:
