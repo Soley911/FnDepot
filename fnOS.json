@@ -404,5 +404,12 @@
     "name": "fnOS-x86_64",
     "url": "http://thunder.liveupdate.fnnas.com:8080/x86_64/trim/fnos-1.1.20-1596.iso",
     "version": "1.1.20"
+  },
+  {
+    "arch": "x86_64",
+    "hash": "9c6af662c635dc2e67b66ea3c48c7da2",
+    "name": "fnOS-x86_64",
+    "url": "http://thunder.liveupdate.fnnas.com:8080/x86_64/trim/fnos-1.1.23-1627.iso",
+    "version": "1.1.23"
   }
 ]
