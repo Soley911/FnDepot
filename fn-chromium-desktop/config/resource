@@ -1,0 +1,22 @@
+{
+  "docker-project": {
+    "projects": [
+      {
+        "name": "fn-chromium-desktop",
+        "path": "docker"
+      }
+    ]
+  },
+  "data-share": {
+    "shares": [
+      {
+        "name": "chromium-desktop",
+        "permission": {
+          "rw": [
+            "docker-fn-chromium-desktop"
+          ]
+        }
+      }
+    ]
+  }
+}
